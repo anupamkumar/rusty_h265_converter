@@ -1,7 +1,7 @@
 [package]
 name = "rusty_h265_converter"
-version = "0.2.0"
-edition = "2021"
+version = "1.0.0"
+edition = "2024"
 description = "Mount-point aware, multi-drive H.265 video converter."
 
 [dependencies]
