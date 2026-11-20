@@ -41,12 +41,12 @@ Grab the binary for your operating system and CPU architecture from the [`dist/`
 
 | Platform | CPU Architecture | Binary |
 | :--- | :--- | :--- |
-| **macOS** | Apple Silicon (M1/M2/M3/M4 — `arm64`) | [`dist/rusty_h265_converter-macos-arm64`](dist/rusty_h265_converter-macos-arm64) |
+| **macOS** | Apple Silicon (M1/M2/M3/M4 — `arm64`) | [`rusty_h265_converter-macos-arm64`](https://github.com/anupamkumar/rusty_h265_converter/releases/download/v1.0/rusty_h265_converter-macos-arm64) |
 | **macOS** | Intel (`x86_64`) | Build with `./scripts/build_binaries.sh macos x86_64` → `dist/rusty_h265_converter-macos-x86_64` |
-| **Windows** | 64-bit Intel/AMD (`x86_64`) | [`dist/rusty_h265_converter-windows-x86_64.exe`](dist/rusty_h265_converter-windows-x86_64.exe) |
-| **Windows** | ARM64 (`arm64`) | [`dist/rusty_h265_converter-windows-arm64.exe`](dist/rusty_h265_converter-windows-arm64.exe) |
-| **Linux / Raspberry Pi** | ARM64 (`arm64` / `aarch64`) | [`dist/rusty_h265_converter-linux-arm64`](dist/rusty_h265_converter-linux-arm64) |
-| **Linux** | 64-bit Intel/AMD (`x86_64`) | Build with `./scripts/build_binaries.sh linux x86_64` → `dist/rusty_h265_converter-linux-x86_64` |
+| **Windows** | 64-bit Intel/AMD (`x86_64`) | [`rusty_h265_converter-windows-x86_64.exe`](https://github.com/anupamkumar/rusty_h265_converter/releases/download/v1.0/rusty_h265_converter-windows-x86_64.exe) |
+| **Windows** | ARM64 (`arm64`) | Build with `./scripts/build_binaries.sh macos x86_64` → `dist/rusty_h265_converter-windows-arm64.exe` |
+| **Linux / Raspberry Pi** | ARM64 (`arm64` / `aarch64`) | [`rusty_h265_converter-linux-arm64`](https://github.com/anupamkumar/rusty_h265_converter/releases/download/v1.0/rusty_h265_converter-linux-arm64) |
+| **Linux** | 64-bit Intel/AMD (`x86_64`) | [`rusty_h265_converter-linux-x86_64`](https://github.com/anupamkumar/rusty_h265_converter/releases/download/v1.0/rusty_h265_converter-linux-x86_64) |
 
 Place the executable in a folder alongside [`config.yaml`](config.yaml) and [`logging.conf`](logging.conf).
 
