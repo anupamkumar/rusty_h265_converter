@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1080" width="100%" height="100%" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+  <defs>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00e5ff"/>
+    </marker>
+    <marker id="arrow-yellow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ffd600"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00e676"/>
+    </marker>
+    <marker id="arrow-magenta" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ff4081"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ff9100"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1080" fill="#0f1117"/>
+
+  <!-- Title Banner -->
+  <text x="800" y="36" fill="#ffffff" font-size="20" font-weight="bold" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">
+    RUSTY H.265 CONVERTER — ANNOTATED TERMINAL UI (TUI) ARCHITECTURE GUIDE
+  </text>
+
+  <!-- ==================== TOP CALLOUT CARDS (ROW 1) ==================== -->
+  <!-- Callout 1: Saved -->
+  <rect x="30" y="55" width="290" height="68" rx="6" fill="#16222f" stroke="#00e5ff" stroke-width="1.5"/>
+  <text x="42" y="75" fill="#00e5ff" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">① GLOBAL SPACE SAVED</text>
+  <text x="42" y="93" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">Real-time sum of bytes saved across</text>
+  <text x="42" y="109" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">all local mounts and remote SSH nodes.</text>
+
+  <!-- Callout 2: RAMDisk -->
+  <rect x="345" y="55" width="360" height="68" rx="6" fill="#16222f" stroke="#00e5ff" stroke-width="1.5"/>
+  <text x="357" y="75" fill="#00e5ff" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">② PROVISIONED RAMDISK STAGING</text>
+  <text x="357" y="93" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">In-memory HFS+/tmpfs volume (8.0 GB) isolating</text>
+  <text x="357" y="109" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">HDD heads from random FFmpeg read/write I/O.</text>
+
+  <!-- Callout 3: Elapsed, Queues & Quit -->
+  <rect x="730" y="55" width="430" height="68" rx="6" fill="#16222f" stroke="#00e5ff" stroke-width="1.5"/>
+  <text x="742" y="75" fill="#00e5ff" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">③ QUEUE VIEWER ('v') &amp; GRACEFUL EXIT ('q' / Ctrl+C)</text>
+  <text x="742" y="93" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">Press 'v' to inspect/sort detached queue snapshots;</text>
+  <text x="742" y="109" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">press 'q'/Ctrl+C to abort encodes &amp; drain flushes.</text>
+
+  <!-- ==================== TERMINAL WINDOWREPLICA ==================== -->
+  <rect x="25" y="145" width="1140" height="645" rx="8" fill="#141414" stroke="#3a3f4b" stroke-width="2"/>
+
+  <!-- Top TUI Header Box -->
+  <rect x="38" y="158" width="1114" height="34" fill="#141414" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="50" y="180" fill="#00e5ff" font-size="12.2" font-weight="bold">
+    RUSTY H.265 CONVERTER │ Saved: +4196.53 GB │ RAMDisk: RustyH265RAMDisk (8.0 GB) │ Elapsed: 02:44:17 │ Queues: 'v' │ Quit: 'q' / Ctrl+C
+  </text>
+
+  <!-- Leader arrows from Top Callouts -->
+  <line x1="210" y1="123" x2="265" y2="162" stroke="#00e5ff" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <line x1="525" y1="123" x2="555" y2="162" stroke="#00e5ff" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <line x1="945" y1="123" x2="995" y2="162" stroke="#00e5ff" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+
+  <!-- ==================== LOCAL MOUNT 1 (/Volumes/f0m) ==================== -->
+  <rect x="38" y="204" width="1114" height="118" fill="#141414" stroke="#8b949e" stroke-width="1.2"/>
+  <rect x="48" y="196" width="735" height="16" fill="#141414"/>
+  <text x="52" y="208" fill="#ffd600" font-size="12" font-weight="bold">
+    Local Mount: /Volumes/f0m [/dev/disk5s2 | HDD | 3-Thread Staged (8.0G) | Apple Silicon VideoToolbox] [Saved: +1597.81 GB]
+  </text>
+  <text x="50" y="226" fill="#e6edf3" font-size="12">
+    Root Dir  : /Volumes/f0m/f (Queue left: 43480 [Ready: 30] | Free Space: 8312.34 GB)
+  </text>
+  <text x="50" y="244" fill="#e6edf3" font-size="12">
+    Target    : z_random pov -&gt; z_random pov_h265 (Size: 147.54 GB)
+  </text>
+  <text x="50" y="262" fill="#e6edf3" font-size="12">
+    Status    : Converting media queue  │  Done: 8914/52785 (17%) [Conv:218 Ver:2907 Moved/LowBR:40/39 Err:5749]
+  </text>
+  <line x1="38" y1="274" x2="1152" y2="274" stroke="#8b949e" stroke-width="1"/>
+  <!-- Progress Bar Local 1 -->
+  <text x="50" y="298" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="286" width="148" height="14" fill="#00e676"/>
+  <rect x="206" y="286" width="62" height="14" fill="#30363d"/>
+  <text x="272" y="298" fill="#e6edf3" font-size="12">
+    ]  70.5% │ 10:06/14:19 │       13.4x │  1927k h264 │
+  </text>
+  <rect x="625" y="285" width="180" height="15" fill="#ffffff"/>
+  <text x="808" y="298" fill="#e6edf3" font-size="12">.mp4</text>
+
+  <!-- ====================REMOTE NODE 1 (192.168.68.107 Mac) ==================== -->
+  <rect x="38" y="338" width="1114" height="140" fill="#141414" stroke="#8b949e" stroke-width="1.2"/>
+  <rect x="48" y="330" width="540" height="16" fill="#141414"/>
+  <text x="52" y="342" fill="#ff4081" font-size="12" font-weight="bold">
+    Remote Node: dev@192.168.68.107:22 [Mac | hevc_videotoolbox | Max: 30.0 GB] [Saved: +47.06 GB]
+  </text>
+  <text x="50" y="360" fill="#e6edf3" font-size="12">
+    Remote Dir: /tmp/rusty_h265_remote_12650  │  Remaining Quota: 1.63 GB
+  </text>
+  <text x="50" y="378" fill="#e6edf3" font-size="12">
+    Target    : Queue /Volumes/f0m -&gt; z_random pov -&gt; z_random pov_h265 (Size: 200.09 MB)
+  </text>
+  <text x="50" y="396" fill="#e6edf3" font-size="12">
+    Status    : Step 7: Active (Upload / Encode / Copy-Back)  │  Done: 189/297 (64%) [Conv:186 Ver:0 Moved/LowBR:0/0 Err:3]
+  </text>
+  <line x1="38" y1="408" x2="1152" y2="408" stroke="#8b949e" stroke-width="1"/>
+  <!-- Slot 0 scp-up -->
+  <text x="50" y="430" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="418" width="95" height="13" fill="#00e676"/>
+  <rect x="153" y="418" width="115" height="13" fill="#30363d"/>
+  <text x="272" y="430" fill="#e6edf3" font-size="12">
+    ]  45.0% │ 00:07/00:21 │     5.4MB/s │ 45298k scp-up │
+  </text>
+  <rect x="640" y="418" width="90" height="13" fill="#ffffff"/>
+  <text x="733" y="430" fill="#e6edf3" font-size="12">.mp4 (142MB)</text>
+  <!-- Slot 2 scp-down -->
+  <text x="50" y="452" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="440" width="210" height="13" fill="#30363d"/>
+  <text x="272" y="452" fill="#e6edf3" font-size="12">
+    ]   0.0% │ 00:01/00:00 │     0.0MB/s │   288k scp-down │
+  </text>
+  <rect x="652" y="440" width="85" height="13" fill="#ffffff"/>
+  <text x="740" y="452" fill="#e6edf3" font-size="12">_h265.mp4 (36MB)</text>
+
+  <!-- ==================== REMOTE NODE 2 (192.168.68.120 Linux NVENC) ==================== -->
+  <rect x="38" y="494" width="1114" height="140" fill="#141414" stroke="#8b949e" stroke-width="1.2"/>
+  <rect x="48" y="486" width="510" height="16" fill="#141414"/>
+  <text x="52" y="498" fill="#ff4081" font-size="12" font-weight="bold">
+    Remote Node: dev@192.168.68.120:22 [Linux | hevc_nvenc | Max: 8.0 GB] [Saved: +30.15 GB]
+  </text>
+  <text x="50" y="516" fill="#e6edf3" font-size="12">
+    Remote Dir: /tmp/rusty_h265_remote_12650  │  Remaining Quota: 655.97 MB
+  </text>
+  <text x="50" y="534" fill="#e6edf3" font-size="12">
+    Target    : Queue /Volumes/f1m -&gt; asian -&gt; asian_h265 (Size: 2.92 GB)
+  </text>
+  <text x="50" y="552" fill="#e6edf3" font-size="12">
+    Status    : Step 7: Active (Upload / Encode / Copy-Back)  │  Done: 151/159 (95%) [Conv:132 Ver:0 Moved/LowBR:0/0 Err:19]
+  </text>
+  <line x1="38" y1="564" x2="1152" y2="564" stroke="#8b949e" stroke-width="1"/>
+  <!-- Slot 0 scp-up -->
+  <text x="50" y="586" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="574" width="210" height="13" fill="#00e676"/>
+  <text x="272" y="586" fill="#e6edf3" font-size="12">
+    ] 100.0% │ 00:16/00:16 │     7.9MB/s │ 66270k scp-up │
+  </text>
+  <rect x="640" y="574" width="60" height="13" fill="#ffffff"/>
+  <text x="703" y="586" fill="#e6edf3" font-size="12">n.mp4 (122MB)</text>
+  <!-- Slot 2 scp-down -->
+  <text x="50" y="608" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="596" width="12" height="13" fill="#00e676"/>
+  <rect x="70" y="596" width="198" height="13" fill="#30363d"/>
+  <text x="272" y="608" fill="#e6edf3" font-size="12">
+    ]   4.0% │ 00:03/00:25 │     2.0MB/s │ 16777k scp-down │
+  </text>
+  <rect x="652" y="596" width="100" height="13" fill="#ffffff"/>
+  <text x="755" y="608" fill="#e6edf3" font-size="12">_h265.mp4 (48MB)</text>
+
+  <!-- ==================== REMOTE NODE 3 (192.168.68.124 Linux QSV) ==================== -->
+  <rect x="38" y="650" width="1114" height="122" fill="#141414" stroke="#8b949e" stroke-width="1.2"/>
+  <rect x="48" y="642" width="490" height="16" fill="#141414"/>
+  <text x="52" y="654" fill="#ff4081" font-size="12" font-weight="bold">
+    Remote Node: dev@192.168.68.124:22 [Linux | hevc_qsv | Max: 8.0 GB] [Saved: +6.10 GB]
+  </text>
+  <text x="50" y="672" fill="#e6edf3" font-size="12">
+    Remote Dir: /tmp/rusty_h265_remote_12650  │  Remaining Quota: 2.93 MB
+  </text>
+  <text x="50" y="690" fill="#e6edf3" font-size="12">
+    Target    : Queue /Volumes/f0m -&gt; z_random pov -&gt; z_random pov_h265 (Size: 214.26 MB)
+  </text>
+  <text x="50" y="708" fill="#e6edf3" font-size="12">
+    Status    : Step 7: Active (Upload / Encode / Copy-Back)  │  Done: 20/64 (31%) [Conv:19 Ver:0 Moved/LowBR:0/0 Err:2]
+  </text>
+  <line x1="38" y1="720" x2="1152" y2="720" stroke="#8b949e" stroke-width="1"/>
+  <!-- Slot 1 Remote Encode -->
+  <text x="50" y="746" fill="#e6edf3" font-size="12">[</text>
+  <rect x="58" y="734" width="160" height="13" fill="#00e676"/>
+  <rect x="218" y="734" width="50" height="13" fill="#30363d"/>
+  <text x="272" y="746" fill="#e6edf3" font-size="12">
+    ]  76.0% │ 06:06/08:01 │      0.853x │ 11072k h264 │
+  </text>
+  <rect x="625" y="734" width="85" height="13" fill="#ffffff"/>
+  <text x="713" y="746" fill="#e6edf3" font-size="12">.mp4</text>
+
+  <!-- ==================== RIGHT-HAND CALLOUT CARDS ==================== -->
+  <!-- Callout 4: Local Mount Header -->
+  <rect x="1190" y="145" width="385" height="90" rx="6" fill="#242012" stroke="#ffd600" stroke-width="1.5"/>
+  <text x="1202" y="165" fill="#ffd600" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">④ LOCAL MOUNT WORKER HEADER</text>
+  <text x="1202" y="183" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Mount &amp; BSD Device: /Volumes/f0m (/dev/disk5s2)</text>
+  <text x="1202" y="199" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Drive Type &amp; Pipeline: HDD | 3-Thread Staged (8.0G)</text>
+  <text x="1202" y="215" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Active Encoder &amp; Mount Saved: +1597.81 GB</text>
+  <line x1="1190" y1="195" x2="785" y2="204" stroke="#ffd600" stroke-width="1.8" marker-end="url(#arrow-yellow)"/>
+
+  <!-- Callout 5: Queue Left & Ready Buffer -->
+  <rect x="1190" y="250" width="385" height="86" rx="6" fill="#242012" stroke="#ffd600" stroke-width="1.5"/>
+  <text x="1202" y="270" fill="#ffd600" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">⑤ QUEUE LEFT &amp; BOUNDED [Ready: N] BUFFER</text>
+  <text x="1202" y="288" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Queue left (43,480): Raw + Ready files remaining</text>
+  <text x="1202" y="304" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• [Ready: 30]: Pre-probed lookahead buffer (30 on HDD)</text>
+  <text x="1202" y="320" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  maintained by Slot 0 Stager for instant dispatch</text>
+  <line x1="1190" y1="285" x2="545" y2="224" stroke="#ffd600" stroke-width="1.8" marker-end="url(#arrow-yellow)"/>
+
+  <!-- Callout 6: Status & Batch Counters -->
+  <rect x="1190" y="350" width="385" height="104" rx="6" fill="#12241b" stroke="#00e676" stroke-width="1.5"/>
+  <text x="1202" y="370" fill="#00e676" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">⑥ BATCH COMPLETION TELEMETRY</text>
+  <text x="1202" y="388" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Conv:218 — Newly encoded to H.265</text>
+  <text x="1202" y="404" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Ver:2907 — Resumed via journal / ffprobe runtime match</text>
+  <text x="1202" y="420" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Moved/LowBR:40/39 — Already HEVC or &lt;1800 kbps moved</text>
+  <text x="1202" y="436" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Err:5749 — Corrupt files skipped (broken_files.journal)</text>
+  <line x1="1190" y1="395" x2="640" y2="262" stroke="#00e676" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+
+  <!-- Callout 7: Remote Node Header & Quota -->
+  <rect x="1190" y="470" width="385" height="104" rx="6" fill="#281424" stroke="#ff4081" stroke-width="1.5"/>
+  <text x="1202" y="490" fill="#ff4081" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">⑦ REMOTE NODE &amp; STAGING QUOTA</text>
+  <text x="1202" y="508" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Auto-detected OS &amp; GPU encoder (hevc_videotoolbox,</text>
+  <text x="1202" y="524" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  hevc_nvenc on .120, hevc_qsv on .124)</text>
+  <text x="1202" y="540" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Remaining Quota: Available remote disk budget out</text>
+  <text x="1202" y="556" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  of MAX_SIZE_IN_GB (30 GB / 8 GB) for input staging</text>
+  <line x1="1190" y1="515" x2="555" y2="496" stroke="#ff4081" stroke-width="1.8" marker-end="url(#arrow-magenta)"/>
+
+  <!-- Callout 8: Remote 3-Thread Pipeline Slots -->
+  <rect x="1190" y="590" width="385" height="120" rx="6" fill="#281424" stroke="#ff4081" stroke-width="1.5"/>
+  <text x="1202" y="610" fill="#ff4081" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">⑧ ASYNC 3-THREAD REMOTE PIPELINE SLOTS</text>
+  <text x="1202" y="628" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Slot 0 (scp-up): Thread 1 uploading next source file</text>
+  <text x="1202" y="644" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  over LAN with PTY-parsed MB/s &amp; size (122MB)</text>
+  <text x="1202" y="660" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Slot 1 (h264): Thread 2 running SSH FFmpeg encode</text>
+  <text x="1202" y="676" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Slot 2 (scp-down): Thread 3 copying finished _h265.mp4</text>
+  <text x="1202" y="692" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  back to local mount while Thread 1/2 work on next file</text>
+  <line x1="1190" y1="630" x2="825" y2="590" stroke="#ff4081" stroke-width="1.8" marker-end="url(#arrow-magenta)"/>
+  <line x1="1190" y1="670" x2="755" y2="742" stroke="#ff4081" stroke-width="1.8" marker-end="url(#arrow-magenta)"/>
+
+  <!-- ==================== BOTTOM ANATOMY OF AN ACTIVE SLOT ROW ==================== -->
+  <rect x="25" y="810" width="1550" height="245" rx="8" fill="#161b22" stroke="#ff9100" stroke-width="1.5"/>
+  <text x="45" y="838" fill="#ff9100" font-size="15" font-weight="bold" font-family="system-ui, sans-serif">
+    ⑨ ANATOMY OF AN ACTIVE PROGRESS SLOT ROW (6-COLUMN FIXED-WIDTH TELEMETRY FORMAT)
+  </text>
+
+  <!-- Sample Row Breakdown -->
+  <rect x="45" y="855" width="1510" height="44" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+  <text x="65" y="882" fill="#00e676" font-size="14" font-weight="bold">[████████████████░░░░░░]</text>
+  <text x="295" y="882" fill="#e6edf3" font-size="14">│  70.5%  │  10:06/14:19  │    13.4x (or 7.9MB/s)    │   1927k h264 (or scp-up)   │  video_clip.mp4 (236MB)</text>
+
+  <!-- Column 1 -->
+  <rect x="45" y="912" width="235" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="57" y="932" fill="#00e676" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">1. Progress Bar</text>
+  <text x="57" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Adaptive width (inner_width / 4)</text>
+  <text x="57" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Green █ filled vs Gray ░ empty</text>
+  <text x="57" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Updates every 80–120ms from</text>
+  <text x="57" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  FFmpeg pipe:1, PTY scp, or</text>
+  <text x="57" y="1016" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  4MB RAMDisk copy chunks</text>
+
+  <!-- Column 2 -->
+  <rect x="292" y="912" width="155" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="304" y="932" fill="#ffd600" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">2. Completion %</text>
+  <text x="304" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• out_time / duration</text>
+  <text x="304" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  for FFmpeg encodes</text>
+  <text x="304" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• bytes_copied / total</text>
+  <text x="304" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  for SCP &amp; RAMDisk</text>
+
+  <!-- Column 3 -->
+  <rect x="459" y="912" width="215" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="471" y="932" fill="#00e5ff" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">3. Time Window</text>
+  <text x="471" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Encode: encoded media</text>
+  <text x="471" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  timestamp / total runtime</text>
+  <text x="471" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• SCP / Copy: elapsed transfer</text>
+  <text x="471" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  time / estimated total time</text>
+
+  <!-- Column 4 -->
+  <rect x="686" y="912" width="265" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="698" y="932" fill="#ff4081" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">4. Throughput / Stage Speed</text>
+  <text x="698" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Encode: Realtime speed (13.4x, 0.853x)</text>
+  <text x="698" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• SCP: Live LAN speed (7.9MB/s, 5.4MB/s)</text>
+  <text x="698" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Staging: HDD-&gt;RAMDisk / RAMDisk-&gt;HDD</text>
+  <text x="698" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Verifier: Probing / Verifying / 1f-Decode</text>
+
+  <!-- Column 5 -->
+  <rect x="963" y="912" width="285" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="975" y="932" fill="#ff9100" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">5. Bitrate &amp; Codec / Operation</text>
+  <text x="975" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Encode: Source bitrate + video codec</text>
+  <text x="975" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  (1927k h264, 4866k mpeg4, 11072k h264)</text>
+  <text x="975" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Remote Transfer: Effective kbps + stage</text>
+  <text x="975" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  (66270k scp-up, 16777k scp-down)</text>
+  <text x="975" y="1016" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Slot 0 Check: ffprobe-chk / ffprobe-src</text>
+
+  <!-- Column 6 -->
+  <rect x="1260" y="912" width="295" height="125" rx="5" fill="#1c2128" stroke="#30363d"/>
+  <text x="1272" y="932" fill="#e6edf3" font-size="12" font-weight="bold" font-family="system-ui, sans-serif">6. Filename &amp; Transfer Size</text>
+  <text x="1272" y="952" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Middle-truncated to fit terminal width</text>
+  <text x="1272" y="968" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">• Appends file size in MB/GB during SCP</text>
+  <text x="1272" y="984" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  transfers &amp; Slot 0 verification</text>
+  <text x="1272" y="1000" fill="#d0d7de" font-size="11" font-family="system-ui, sans-serif">  (e.g., .mp4 (142MB) -&gt; _h265.mp4 (36MB))</text>
+</svg>

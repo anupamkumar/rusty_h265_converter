@@ -1,0 +1,16 @@
+[package]
+name = "rusty_h265_converter"
+version = "0.2.0"
+edition = "2021"
+description = "Mount-point aware, multi-drive H.265 video converter."
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+walkdir = "2.5.0"
+
+[profile.release]
+debug = true

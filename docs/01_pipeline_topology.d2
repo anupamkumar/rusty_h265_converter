@@ -1,0 +1,87 @@
+# Declarative D2 Architecture Diagram for rusty_h265_converter
+# Render with D2 (https://d2lang.com/): d2 01_pipeline_topology.d2 01_pipeline_topology.svg
+
+direction: right
+
+orchestrator: "1. Orchestrator & Startup Initialization (run_app)" {
+  cli: "CLI Args & Config Loader\n(config.yaml + logging.conf)"
+  ramdisk: "ProvisionedRamDisk\n(/Volumes/RustyH265RAMDisk)"
+  mount_grouping: "Mount Point Grouping\n(get_mount_info -> DriveType::Hdd/Ssd/Nvme)"
+
+  cli -> ramdisk -> mount_grouping
+}
+
+journals: "2. Persistent Journals & Logs" {
+  completed: "completed_files.journal\n(Tier-1 Resume Cache)" {shape: cylinder}
+  broken: "broken_files.journal\n(Corrupt Media Skip)" {shape: cylinder}
+  distributed: "distributed_tasks_journal.json\n(Remote Crash Recovery)" {shape: cylinder}
+  failed_dirs: "failed_dirs.txt\n(Directory Error Log)" {shape: page}
+}
+
+mount_state: "3. Per-Mount Queue State (MountQueueState)" {
+  raw_queue: "raw_queue (Unverified Files)" {shape: queue}
+  ready_queue: "queue (Verified Ready Buffer:\n30 HDD / 50 SSD / 60 NVMe)" {shape: queue}
+  inflight: "in_flight_items (Active Local & Remote\nFiles + Stage Telemetry)" {shape: page}
+  io_lock: "io_lock (Per-Drive Mutex)" {shape: diamond}
+}
+
+local_worker: "4. Local Mount 3-Thread Pipeline (run_local_mount_pipeline)" {
+  t0_stager: "Slot 0: Stager Thread (run_local_stager_thread)\n• Rotating Queue Inspection (Case A / B1 / B2)\n• 1-Frame FFmpeg Decode Smoke Test\n• Stages HDD -> RAMDisk via io_lock\n• Sleeps STAGER_WAIT_MSEC (150ms) when idle/full"
+  staged_q: "staged_queue\n(Bounded: Max 4 in RAMDisk)" {shape: queue}
+  t1_converter: "Slot 1: Converter Thread (run_local_converter_thread)\n• Local FFmpeg Encode in RAMDisk\n  (VideoToolbox / NVENC / libx265)"
+  flush_q: "flush_queue" {shape: queue}
+  t2_flusher: "Slot 2: Flusher Thread (run_local_flusher_thread)\n• Flushes RAMDisk -> HDD via io_lock\n• Cleans up RAMDisk temp files"
+
+  t0_stager -> staged_q -> t1_converter -> flush_q -> t2_flusher
+}
+
+remote_manager: "5. Remote Node Manager (Per SSH Host)" {
+  dispatcher: "Main Dispatcher Loop\n(Quota + Unoccupied Mount Priority)"
+  t1_upload: "Thread 1: upload_handle\n(Slot 0: PTY scp-up)"
+  t2_encode: "Thread 2: encode_handle\n(Slot 1: SSH + Remote FFmpeg)"
+  t3_copyback: "Thread 3: copyback_handle\n(Slot 2: PTY scp-down or\nFailed-Encode SSH Eviction)"
+
+  dispatcher -> t1_upload: "upload_queue"
+  t1_upload -> t2_encode: "encode_queue"
+  t2_encode -> t3_copyback: "copyback_queue\n(Success or encode_failed)"
+}
+
+tui_inspector: "6. Interactive TUI & Detached Queue Viewer" {
+  dashboard: "Dashboard View\n(Live Worker Boxes + 6-Col Progress)"
+  selector: "QueueSelector ('v')\n(Mount Queue Dropdown)"
+  pager: "QueuePager (Detached Deep-Copy Snapshot)\n• Flat list: in_flight_items + queue + raw_queue\n• Sortable via :s1a/:s1d, :s2a/:s2d, :s3a/:s3d, :r"
+
+  dashboard -> selector -> pager
+}
+
+observability: "8. Observability Stack (Prometheus + Loki + Python Agent)" {
+  registry: "In-Process MetricsRegistry & ThreadWaitTracker\n(/tmp/rusty_h265_telemetry.json + rusty_h265_converter.log)"
+  remote_agent: "Remote rusty_h265_metrics_agent.py (--role remote)\n(Deployed via SCP at Step 6; ctypes CPU/RAM/Disk/NVML/IOKit)"
+  master_agent: "Local rusty_h265_metrics_agent.py (--role master)\n(Prometheus :9184/metrics & Push + Rotation-Aware Loki Shipper)"
+
+  remote_agent -> registry: "SSH JSON Telemetry Pipe"
+  registry -> master_agent: "Snapshot + Structured logfmt"
+}
+
+completion: "7. Subdir Completion & Self-Healing (Step 2.6)" {
+  tracker: "SubdirTracker\n(source_files, completed, moved, failed)"
+  reconcile: "Target vs Source Count Check\n• target == source -> delete source\n• target > source -> ffprobe targets,\n  purge bad, verify all sources present,\n  log extra files [WARN] & delete source [WARN]"
+  tracker -> reconcile
+}
+
+orchestrator.mount_grouping -> mount_state.raw_queue: "Populate Largest-Subdir-First"
+journals.completed <-> local_worker.t0_stager: "Tier-1 Lookup"
+journals.broken <-> local_worker.t0_stager: "Skip / Record Corrupt"
+journals.distributed <-> remote_manager.dispatcher: "State & Crash Recovery"
+mount_state.raw_queue -> local_worker.t0_stager: "Inspect & Probe"
+local_worker.t0_stager -> mount_state.ready_queue: "Push Verified Ready"
+mount_state.ready_queue -> local_worker.t0_stager: "Pop for RAMDisk Staging"
+mount_state.ready_queue -> remote_manager.dispatcher: "Work Steal"
+mount_state.inflight -> tui_inspector.pager: "Deep-Copy Snapshot"
+mount_state.io_lock -> local_worker.t0_stager: "Guards Sequential Read / Move"
+mount_state.io_lock -> local_worker.t2_flusher: "Guards Sequential Write"
+local_worker.t2_flusher -> completion.tracker
+remote_manager.t3_copyback -> completion.tracker
+remote_manager.t3_copyback -> journals.broken: "encode_failed Eviction & Log"
+completion.reconcile -> journals.completed: "Record Verified Output"
+completion.reconcile -> journals.failed_dirs: "Record Missing / Failed"

@@ -1,0 +1,6 @@
+/.DS_Store
+/.vscode
+/Cargo.lock
+/dist
+/rusty_h265_converter.log
+/target

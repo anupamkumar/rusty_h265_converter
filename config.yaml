@@ -1,0 +1,230 @@
+# --- Configuration ---
+RESOURCE_CEILING: 90.0
+RAMDISK_EVICTION_THRESHOLD: 95.0
+ORCHESTRATOR_CHECK_INTERVAL_SEC: 1.0
+MONITOR_INTERVAL_MSEC: 500
+FFMPEG_NICE_VALUE: -10
+INTERMEDIATE_NICE_VALUE: -13
+
+LOCAL:
+  NODENAME: "mac-master"
+
+VIDEO_EXTENSIONS:
+  - .wmv
+  - .mov
+  - .mp4
+  - .mkv
+  - .avi
+  - .flv
+  - .mpg
+  - .m4v
+  - .mpeg
+  - .mpg
+
+# --- Target Codec & Container Criteria ---
+# Change these 3 fields to convert your library to any supported format without editing raw FFmpeg args.
+# Supported TARGET_VIDEO_CODEC : hevc | h264 | av1 | vp9 | vp8 | prores | webp | gif
+# Supported TARGET_AUDIO_CODEC : aac | opus | vorbis | mp3 | flac | ac3 | copy | none
+# Supported TARGET_CONTAINER   : mp4 | mkv | webm | mov | webp | gif
+# Reference: See the compatibility table in README.md or MDN Video Codecs guide:
+#   https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/Video_codecs
+TARGET_VIDEO_CODEC: "hevc"
+TARGET_AUDIO_CODEC: "aac"
+TARGET_CONTAINER: "mp4"
+
+# --- FFmpeg & Output Criteria ---
+OUTPUT_SUFFIX: "_h265"
+OUTPUT_EXTENSION: ".mp4"
+FFMPEG_DECODE_ARGS:
+  - -fflags
+  - +genpts+igndts
+  - -threads
+  - "0"
+FFMPEG_MACOS_HWACCEL_ARGS:
+  - -hwaccel
+  - videotoolbox
+# Applied ONLY on Attempt 2 fallback retry (when hardware decoding fails or produces
+# mismatched video/audio stream durations such as 2.0x field-coded interlaced H.264 streams).
+# deint=1 only deinterlaces frames marked interlaced and passes progressive frames untouched.
+FFMPEG_FALLBACK_VIDEO_FILTER_ARGS:
+  - -vf
+  - bwdif=mode=0:parity=-1:deint=1,format=yuv420p
+# Note: -hwaccel_output_format cuda is automatically stripped when the selected output encoder is not *_nvenc.
+FFMPEG_NVIDIA_HWACCEL_ARGS:
+  - -hwaccel
+  - cuda
+  - -hwaccel_output_format
+  - cuda
+
+# --- Optional Power-User FFmpeg Encoder / Audio Overrides ---
+# Leave these commented out to let rusty_h265_converter automatically discover and pick the best
+# hardware/software encoder on each machine for TARGET_VIDEO_CODEC / TARGET_AUDIO_CODEC.
+# If you uncomment any block below, its `-c:v` / `-c:a` MUST match your TARGET_*_CODEC setting
+# (otherwise startup validation will fail fast so you never accidentally encode with mismatched flags).
+#
+# FFMPEG_MACOS_ENCODER_ARGS:
+#   - -fps_mode
+#   - vfr
+#   - -avoid_negative_ts
+#   - make_zero
+#   - -max_interleave_delta
+#   - "0"
+#   - -c:v
+#   - hevc_videotoolbox
+#   - -q:v
+#   - "50"
+#   - -prio_speed
+#   - "1"
+#   - -tag:v
+#   - hvc1
+# FFMPEG_NVIDIA_ENCODER_ARGS:
+#   - -fps_mode
+#   - vfr
+#   - -avoid_negative_ts
+#   - make_zero
+#   - -max_interleave_delta
+#   - "0"
+#   - -c:v
+#   - hevc_nvenc
+#   - -preset
+#   - p4
+#   - -cq
+#   - "28"
+# FFMPEG_GTX_3050_TI_ENCODER_ARGS:
+#   - -fps_mode
+#   - vfr
+#   - -avoid_negative_ts
+#   - make_zero
+#   - -max_interleave_delta
+#   - "0"
+#   - -c:v
+#   - hevc_nvenc
+#   - -preset
+#   - p4
+#   - -tune
+#   - hq
+#   - -rc
+#   - vbr
+#   - -cq
+#   - "28"
+#   - -b:v
+#   - "0"
+#   - -tag:v
+#   - hvc1
+# FFMPEG_CPU_ENCODER_ARGS:
+#   - -fps_mode
+#   - vfr
+#   - -avoid_negative_ts
+#   - make_zero
+#   - -max_interleave_delta
+#   - "0"
+#   - -c:v
+#   - libx265
+#   - -crf
+#   - "28"
+#   - -preset
+#   - ultrafast
+# # macOS hardware/OS-accelerated AAC audio encoding via Apple AudioToolbox (aac_at):
+# FFMPEG_MACOS_AUDIO_ARGS:
+#   - -af
+#   - aresample=async=1:first_pts=0
+#   - -c:a
+#   - aac_at
+#   - -b:a
+#   - 192k
+# # Cross-platform AAC audio encoding for Windows/Linux workers:
+# FFMPEG_AUDIO_ARGS:
+#   - -af
+#   - aresample=async=1:first_pts=0
+#   - -c:a
+#   - aac
+#   - -b:a
+#   - 192k
+
+# --- Speed & Space Heuristics ---
+MIN_BITRATE_KBPS: 1800
+KEEP_SMALLER_ORIGINAL: true
+# Attempt 1 copies MP4-compatible audio (-c:a copy) for speed. If Attempt 1 fails post-encode
+# duration or A/V sync verification, Attempt 2 automatically falls back to FFMPEG_MACOS_AUDIO_ARGS / FFMPEG_AUDIO_ARGS.
+COPY_COMPATIBLE_AUDIO: true
+SORT_BY_SIZE_DESC: true
+
+# --- Post-Encode Duration & Audio/Video Sync Verification Thresholds ---
+# 1. Standard Container Duration Tolerance (in seconds):
+#    Maximum allowed difference between source duration and encoded output duration for standard
+#    containers (.mp4, .mkv, .mov, .m4v). Default 1.5s catches truncations, 2.0x field-doubling,
+#    and +429.49s 32-bit negative-PTS wraparound bugs.
+DURATION_TOLERANCE_SECS: 1.5
+
+# 2. Internal Output Audio-vs-Video Stream Sync Tolerance (in seconds):
+#    Maximum allowed difference between the encoded output file's video stream duration and its
+#    audio stream duration (|out_video_dur - out_audio_dur|). If hardware decoding or -c:a copy
+#    causes the video and audio tracks in the output MP4 to disagree by more than 1.5s, Attempt 1
+#    is rejected and Attempt 2 (software decode + bwdif + aresample audio transcode) is triggered.
+AV_STREAM_MISMATCH_TOLERANCE_SECS: 1.5
+
+# 3. Legacy Container (.wmv / .asf / .avi / .flv / .mpg / .mpeg) Duration Tolerances:
+#    - Microsoft ASF/WMV headers store a static 'Preroll' buffer offset (typically 2000-3000 ms = 2.0-3.0s).
+#      ffprobe on a source .wmv reports (Play_Duration - Preroll), whereas the transcoded .mp4 records the
+#      full decoded packet duration (or vice-versa), causing a normal 1.5s-3.5s difference even on a
+#      100% complete encode. LEGACY_CONTAINER_PREROLL_TOLERANCE_SECS (default 4.0s) accounts for this.
+#    - Legacy Windows Media encoders also use a 1000 Hz (1 ms) variable-frame-rate (VFR) clock that can
+#      drift by ~1-3% over a 10-40 minute clip when frame timestamps and audio silence gaps are normalized.
+#      LEGACY_CONTAINER_VFR_TOLERANCE_PCT (default 3.5%) allows up to 3.5% drift on legacy containers,
+#      hard-capped at LEGACY_CONTAINER_MAX_TOLERANCE_SECS (default 20.0s) so genuinely truncated .wmv
+#      files (Pattern D) are still caught and rejected.
+LEGACY_CONTAINER_PREROLL_TOLERANCE_SECS: 4.0
+LEGACY_CONTAINER_VFR_TOLERANCE_PCT: 3.5
+LEGACY_CONTAINER_MAX_TOLERANCE_SECS: 20.0
+
+# --- RAMDisk & Staging Configuration ---
+ENABLE_RAMDISK: true
+RAMDISK_NAME: "RustyH265RAMDisk"
+RAMDISK_SIZE_GB: 8.0
+RAMDISK_CLEANUP_ON_EXIT: true
+STAGER_WAIT_MSEC: 150
+
+USE_LOCAL_STAGING_FOR_HDD: true
+LOCAL_STAGING_DIR: "/Volumes/RustyH265RAMDisk/staging"
+
+# --- Error Logging & Distributed System Configuration ---
+FAILED_DIRS_PATH: "failed_dirs.txt"
+HIGH_PERFORMANCE_DISTRIBUTED_SYSTEM: true
+TASK_JOURNAL_PATH: "distributed_tasks_journal.json"
+
+WORKER_NODES:
+  - NODENAME: "win-rtx3050ti"
+    IP_ADDRESS: "192.168.68.120"
+    USERNAME: "anu"
+    SSH_PORT: 22
+    MAX_SIZE_IN_GB: 8
+    FFMPEG_PATH: "C:\Users\anu\Downloads\ffm\ffm\bin\ffmpeg.exe"
+    OS_TYPE: "Windows"
+    GPU_PROFILE: "GTX_3050_TI"
+
+  - NODENAME: "mac-mini-m2"
+    IP_ADDRESS: "192.168.68.107"
+    USERNAME: "dev"
+    SSH_PORT: 22
+    MAX_SIZE_IN_GB: 30.0
+    FFMPEG_PATH: "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
+    OS_TYPE: "Mac"
+
+# --- Observability (Prometheus & Grafana Loki) Configuration ---
+PROMETHEUS_ENABLED: true
+AUTO_SPAWN_METRICS_AGENT: false
+DEPLOY_REMOTE_METRICS_AGENT: true
+METRICS_AGENT_SCRIPT_PATH: "scripts/rusty_h265_metrics_agent.py"
+TELEMETRY_SNAPSHOT_PATH: "/tmp/rusty_h265_telemetry.json"
+# Local HTTP scrape endpoint bound by rusty_h265_metrics_agent.py (GET http://<host>:9184/metrics)
+PROMETHEUS_LISTEN_ADDR: "0.0.0.0:9184"
+# Optional remote Prometheus Pushgateway / VictoriaMetrics / collector URL to push metrics periodically:
+PROMETHEUS_ENDPOINT: ""
+PROMETHEUS_PUSH_INTERVAL_SEC: 5
+
+# Grafana Loki Log Shipping Configuration (handled by rusty_h265_metrics_agent.py)
+LOKI_ENABLED: true
+# Local Loki push API endpoint (also reachable over LAN on port 3100)
+LOKI_ENDPOINT: "http://127.0.0.1:3100/loki/api/v1/push"
+LOKI_BATCH_WAIT_MSEC: 1000
+LOKI_BATCH_SIZE_BYTES: 65536
