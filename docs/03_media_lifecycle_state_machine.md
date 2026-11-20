@@ -22,16 +22,16 @@ stateDiagram-v2
 
     VerifiedSkip --> CheckSubdirDone: Increment Ver count
 
-    StageA_Ffprobe --> RecordBroken: Unknown codec, zero duration, or stderr error
-    StageA_Ffprobe --> StageB_1Frame: Valid container and stream headers
+    StageA_Ffprobe --> RecordBroken: Unknown codec, 0 bytes, or ffprobe error
+    StageA_Ffprobe --> StageB_1Frame: Valid video stream (+ demux-copy fallback if 0s header)
     StageB_1Frame --> RecordBroken: 1-frame ffmpeg decode test fails
     StageB_1Frame --> CodecHeuristic: 1st frame decodes cleanly
 
     RecordBroken --> CheckSubdirDone: Append to broken_files.journal and increment Err count
     BrokenSkipped --> CheckSubdirDone: Increment Err count (keep source subdir intact)
 
-    CodecHeuristic --> FastMove: Case B1 - Already HEVC or bitrate below MIN_BITRATE_KBPS
-    CodecHeuristic --> ReadyQueue: Case B2 - Needs H.265 conversion (push to ms.queue)
+    CodecHeuristic --> FastMove: Case B1 - Already target codec or bitrate below MIN_BITRATE_KBPS
+    CodecHeuristic --> ReadyQueue: Case B2 - Needs conversion (push to ms.queue)
 
     FastMove --> CheckSubdirDone: Move via io_lock and increment Moved count
 
@@ -39,9 +39,12 @@ stateDiagram-v2
     ReadyQueue --> ScpUp: Picked by Remote Dispatcher (Thread 1 scp-up)
 
     LocalStagerRead --> StagedQueue: Push to staged_queue (Max 4 items in RAMDisk)
-    StagedQueue --> LocalEncode: Popped by Local Slot 1 Converter (VideoToolbox / NVENC / libx265)
-    LocalEncode --> FlushQueue: Push to flush_queue
-    LocalEncode --> RecordBroken: Local FFmpeg conversion error
+    StagedQueue --> LocalEncode: Popped by Local Slot 1 Converter (Attempt 1 + Attempt 2 SW/bwdif/aresample)
+    LocalEncode --> VerifyLocalOut: verify_output_durations() (+ lazy demux checks) & 1-frame decode
+    VerifyLocalOut --> FlushQueue: Verified OK
+    VerifyLocalOut --> LocalEncode: Attempt 1 mismatch -> retry Attempt 2 (SW + bwdif + aresample)
+    VerifyLocalOut --> RecordBroken: Attempt 2 failed verification
+    LocalEncode --> RecordBroken: Local FFmpeg conversion error (both attempts)
     FlushQueue --> LocalFlusherWrite: Popped by Local Slot 2 Flusher (copy RAMDisk to HDD via io_lock)
     FlushQueue --> KeepSmallerOrig: Encoded size larger than source (move original via io_lock)
 
@@ -49,11 +52,14 @@ stateDiagram-v2
     RemoteEncode --> ScpDown: FFmpeg exit 0 -> Thread 3 (encode_failed = false)
     RemoteEncode --> ReadyQueue: SSH transport drop (exit 255, re-queue to front)
     RemoteEncode --> RemoteEvictFailed: FFmpeg media error -> Thread 3 (encode_failed = true)
+    ScpDown --> VerifyRemoteOut: verify_output_durations() (+ lazy demux checks) before deleting remote_input
+    VerifyRemoteOut --> CheckSubdirDone: Verified OK -> delete remote files & record in completed_files.journal
+    VerifyRemoteOut --> RemoteEncode: Attempt 1 mismatch -> delete bad output only & retry Attempt 2 (bwdif)
+    VerifyRemoteOut --> RemoteEvictFailed: Attempt 2 failed verification
     RemoteEvictFailed --> RecordBroken: Thread 3 SSH deletes remote files, releases quota, logs broken
 
     KeepSmallerOrig --> CheckSubdirDone: Move original and record in completed_files.journal
     LocalFlusherWrite --> CheckSubdirDone: Record in completed_files.journal and increment Conv count
-    ScpDown --> CheckSubdirDone: Record in completed_files.journal and increment Conv count
 
     CheckSubdirDone --> KeepSourceIntact: failed_files greater than 0
     CheckSubdirDone --> CompareCounts: completed_files equals total_files and failed_files equals 0

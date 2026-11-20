@@ -122,18 +122,32 @@ Each physical mount runs `run_local_mount_pipeline`, which spawns three dedicate
        * **Case A — Two-Tier Resume Check (`try_resume_existing_h265_output`)**:
          * **Tier 1 (Journal)**: Checks if `<stem>_h265.mp4` or `<stem>_h265.<ext>` exists in `dest_dir` and its byte size matches `completed_files.journal`.
          * **Tier 2 (`ffprobe-chk` Fallback)**: If an output file exists on disk but is not in the journal, displays `ffprobe-chk` (`Verifying`) in `Slot 0` and probes both source and target to confirm a valid video codec and matching runtime (`|src_duration - dst_duration| <= 1.5s`). Valid matches are recorded into `completed_files.journal` and counted under `Ver:<N>`.
-       * **Stage A & B Source Validation (`ffprobe -v error` + `verify_first_frame_decodable`)**:
-         * Runs `ffprobe -v error` on the source file followed by a 1-frame FFmpeg decode test (`ffmpeg -nostdin -v error -i "<src>" -map 0:v:0 -frames:v 1 -f null -`). Any corrupt header or undecodable bitstream is recorded in `broken_files.journal` and skipped.
-       * **Case B1 — Already-HEVC or Low-Bitrate Fast Move**:
-         * If `video_codec` is already `hevc`/`h265` or `bitrate_kbps < MIN_BITRATE_KBPS` (`1800 kbps`), acquires `ms.io_lock` and moves the file directly to `<dest_dir>/<stem>_h265.<ext>`.
+       * **Stage A & B Source Validation (`ffprobe -v error` + Demux-Copy Fallback + `verify_first_frame_decodable`)**:
+         * Runs `ffprobe -v error` on the source file. If a valid video stream (`video_codec != "unknown"`) and non-zero size are found but header duration is `0.00s` (common in broadcast-flagged / unfinalized WMV/ASF files), Stage A automatically runs a fast **2nd-pass demux-only packet scan** (`probe_duration_via_demux_copy`: `ffmpeg -nostdin -v error -i "<src>" -map 0:v:0 -c copy -f null - -progress pipe:1`) to recover true duration and bitrate without decoding; if packet timestamps are still absent, validity is deferred to Stage B rather than immediately rejecting a playable file.
+         * Follows with Stage B: a 1-frame FFmpeg decode test (`ffmpeg -nostdin -v error -i "<src>" -map 0:v:0 -frames:v 1 -f null -`). Any corrupt header, unknown codec, or undecodable bitstream is recorded in `broken_files.journal` and skipped.
+       * **Case B1 — Already-Target-Codec or Low-Bitrate Fast Move**:
+         * If `video_codec` already matches `TARGET_VIDEO_CODEC` (and container for animated image targets) or `bitrate_kbps < MIN_BITRATE_KBPS` (`1800 kbps`, skipped for animated image targets), acquires `ms.io_lock` and moves the file directly to `<dest_dir>/<stem><OUTPUT_SUFFIX>.<ext>`.
        * **Case B2 — Enqueue to Verified `queue`**:
          * Attaches `cached_probe: Some(probe)` to the `QueuedMediaItem` and pushes it to `ms.queue` (`Ready:<N>`).
      * **Responsibility B (RAMDisk Staging Copy)**: When `staged_queue.len() < LOCAL_STAGED_MAX_ITEMS` (`4`) and RAMDisk has sufficient free bytes (`1.2x` source size + `128 MB` headroom), pops a verified item from `ms.queue`, acquires `ms.io_lock`, copies `HDD -> RAMDisk` with live 4 MB chunk progress in `Slot 0`, and pushes a `LocalStagedTask` into `staged_queue`.
      * **Configurable Idle/Capacity Backoff**: Sleeps for `STAGER_WAIT_MSEC` (`config.yaml`, default `150ms`) whenever waiting for RAMDisk capacity or queue items.
 2. **Slot 1 — Converter Thread (`run_local_converter_thread`)**:
-   * Pops `LocalStagedTask` items from `staged_queue`, runs hardware-accelerated local FFmpeg encoding (`hevc_videotoolbox`, `hevc_nvenc`, or `libx265` with automatic software-decode fallback) entirely inside RAMDisk, and pushes a `LocalFlushTask` to `flush_queue`.
+   * Pops `LocalStagedTask` items from `staged_queue`, runs hardware-accelerated local FFmpeg encoding (`hevc_videotoolbox`, `hevc_nvenc`, or discovered fallback encoder) entirely inside RAMDisk, validates the output with `verify_output_durations()` + `verify_first_frame_decodable()`, automatically retries once (**Attempt 2**) with software decode + `FFMPEG_FALLBACK_VIDEO_FILTER_ARGS` (`bwdif`) + full audio transcode (`aresample=async=1:first_pts=0`) if Attempt 1 fails encode or duration/A-V sync verification, and pushes a `LocalFlushTask` to `flush_queue`.
 3. **Slot 2 — Flusher Thread (`run_local_flusher_thread`)**:
-   * Pops `LocalFlushTask` items from `flush_queue`, acquires `ms.io_lock`, flushes the encoded output from `RAMDisk -> HDD` (or moves the original source file if the encoded output was larger than the original), cleans up the RAMDisk temporary files, records into `completed_files.journal`, clears `in_flight_items`, and invokes `complete_queued_item` (Step 2.6 subdir reconciliation).
+   * Pops `LocalFlushTask` items from `flush_queue`, acquires `ms.io_lock`, flushes the encoded output from `RAMDisk -> HDD` (or moves the original source file if `KEEP_SMALLER_ORIGINAL` is true and the encoded output was larger), cleans up the RAMDisk temporary files, records into `completed_files.journal`, clears `in_flight_items`, and invokes `complete_queued_item` (Step 2.6 subdir reconciliation).
+
+### 3.3 Post-Encode Verification, 2nd-Pass Lazy Demux Checks & Attempt 2 Fallback Retries
+
+Real-world media archives contain container quirks where `ffprobe` headers disagree with actual packet timelines. Rather than blindly loosening tolerances (which would let truncated encodes slip through), `verify_output_durations()` and the local/remote pipelines use **zero-overhead 2nd-pass lazy checks** that trigger *only* when an initial header check flags a mismatch:
+
+| Edge Case | Symptom on 1st Pass | 2nd-Pass Recovery / Handling |
+| :--- | :--- | :--- |
+| **Headerless / broadcast-flagged WMV/ASF** | `ffprobe` detects `wmv1`/`wmv2` but reports `duration=0.00s`. | Stage A runs a fast `-c copy` demux scan (`probe_duration_via_demux_copy`) to recover true duration & bitrate; if timestamps are still unindexed, defers validity to Stage B 1-frame decode while still enforcing `out_duration > 0` post-encode. |
+| **Asymmetric legacy WMV/ASF tracks** | ASF duplicates a single container `Play_Duration` onto both video & audio headers even when true streams differ (e.g., 5s video / 10s audio), causing false `Output A/V stream duration desync`. | When `|out_v - out_a| > AV_STREAM_MISMATCH_TOLERANCE_SECS` on legacy containers (or missing per-stream headers), lazily runs `probe_av_stream_durations_via_demux_copy()` (`0:v:0` and `0:a:0`). Accepts if output faithfully preserves the source's true A/V delta and per-stream spans; rejects genuine introduced drift/truncation. |
+| **Wrapped 32-bit 10 MHz MP4 headers (`+429.497s`)** | Buggy 32-bit MP4 muxers wrap `mvhd`/`mdhd` duration modulo $2^{32}/10^7 = 429.4967\text{s}$ (e.g., 683.85s clip reports 254.35s in header). | Right before rejecting a source-vs-output duration mismatch, lazily runs `probe_duration_via_demux_copy(source_path)` to read the true packet timeline. Accepts when output matches true demux duration; still rejects genuine truncations (reporting `[true_source_demux_v=...]`). |
+| **Interlaced H.264 / HW-decode glitches (Local & Remote)** | Attempt 1 fails encode or produces 2.0× video duration doubling / A-V desync. | **Local:** Retries Attempt 2 with software decode + `bwdif` (`FFMPEG_FALLBACK_VIDEO_FILTER_ARGS`) + `aresample` audio transcode. **Remote:** `copyback_handle` verifies `verify_output_durations()` *before* deleting `remote_input_path`; on Attempt 1 mismatch, deletes only the bad output, keeps the uploaded input on the remote host (zero re-upload), sets `fallback_retry_attempted = true`, and re-enqueues onto `encode_queue` with `bwdif`. |
+| **Audio-less animated outputs (`webp` / `gif`)** | No audio track; `ffprobe` may report `duration=0.00s` for animated images. | Skips A/V sync checks and accepts non-zero-byte outputs with a valid animated video stream. |
+| **Corrupt duplicate MP4 edit lists (`elst`)** | Old `mp4creator` files duplicate Track 0's `elst` entry so video loops 2× while audio plays once. | Intentionally **not** auto-overridden via `-ignore_editlist 1` (to avoid breaking legitimate AAC priming, B-frame delay, or QuickTime/iOS trim edit lists); safely quarantined in `broken_files.journal`. |
 
 ---
 
@@ -153,7 +167,7 @@ sequenceDiagram
     participant J as Journals<br/>(Task + Completed + Broken)
 
     S0->>S0: Rotating Inspection (Case A Resume / B1 Fast-Move / B2 Probe)
-    S0->>S0: Stage A: ffprobe -v error (codec & duration)
+    S0->>S0: Stage A: ffprobe -v error (+ demux-copy 2nd-pass if 0s header)
     S0->>S0: Stage B: ffmpeg -frames:v 1 -f null - (1-frame decode test)
     S0->>MQ: push_back(QueuedMediaItem + cached_probe) to ms.queue
 
@@ -173,7 +187,7 @@ sequenceDiagram
     and Thread 2: Remote FFmpeg Conversion (Slot 1)
         T2->>MQ: set_in_flight(Remote, "REMOTE <host> [Thread 2: Encoding]")
         T2->>J: conversion_state = Started
-        T2->>T2: Spawn `ssh ffmpeg -nostdin ... -progress pipe:1`
+        T2->>T2: Spawn `ssh ffmpeg -nostdin ... [+ bwdif if Attempt 2] -progress pipe:1`
         alt FFmpeg Succeeded (exit 0)
             T2->>J: conversion_state = Completed
             T2->>MQ: set_in_flight(Remote, "REMOTE <host> [Queued for scp-down]")
@@ -184,14 +198,24 @@ sequenceDiagram
             T2->>MQ: set_in_flight(Remote, "REMOTE <host> [Queued for Eviction]")
             T2->>T3: Push RemoteCopybackTask(encode_failed = true, reason) to copyback_queue
         end
-    and Thread 3: Asynchronous Copy-Back or Failed-Encode Eviction (Slot 2)
+    and Thread 3: Asynchronous Copy-Back, Verify & Retry/Eviction (Slot 2)
         alt encode_failed == false (Successful Encode)
             T3->>MQ: set_in_flight(Remote, "REMOTE <host> [Thread 3: scp-down]")
             T3->>J: copy_back_state = Started
             T3->>T3: Spawn PTY `scp` download -> stream live MB/s & % to TUI Slot 2
-            T3->>T3: SSH remove remote_input & remote_output + release quota
-            T3->>J: copy_back_state = Completed & append to completed_files.journal
-            T3->>MQ: clear_in_flight() & update SubdirTracker (Step 2.6 reconciliation)
+            T3->>T3: verify_output_durations() (+ lazy demux checks on mismatch)
+            alt Verify Failed on Attempt 1 (fallback_retry_attempted == false)
+                T3->>T3: Delete bad local & remote_output ONLY (keep remote_input!)
+                T3->>T2: Re-enqueue to front of encode_queue (Attempt 2 with bwdif)
+            else Verify Passed
+                T3->>T3: SSH remove remote_input & remote_output + release quota
+                T3->>J: copy_back_state = Completed & append to completed_files.journal
+                T3->>MQ: clear_in_flight() & update SubdirTracker (Step 2.6 reconciliation)
+            else Verify Failed on Attempt 2
+                T3->>T3: Delete bad local, SSH remove remote_input & remote_output + release quota
+                T3->>J: copy_back_state = Failed & append to broken_files.journal
+                T3->>MQ: clear_in_flight() & mark failed in SubdirTracker
+            end
         else encode_failed == true (Failed Encode Handoff)
             T3->>MQ: set_in_flight(Remote, "REMOTE <host> [Thread 3: Evicting Failed]")
             T3->>T3: SSH remove remote_input & partial remote_output + release quota
@@ -224,16 +248,16 @@ stateDiagram-v2
 
     VerifiedSkip --> CheckSubdirDone: Increment Ver count
 
-    StageA_Ffprobe --> RecordBroken: Unknown codec, zero duration, or stderr error
-    StageA_Ffprobe --> StageB_1Frame: Valid container and stream headers
+    StageA_Ffprobe --> RecordBroken: Unknown codec, 0 bytes, or ffprobe error
+    StageA_Ffprobe --> StageB_1Frame: Valid video stream (+ demux-copy fallback if 0s header)
     StageB_1Frame --> RecordBroken: 1-frame ffmpeg decode test fails
     StageB_1Frame --> CodecHeuristic: 1st frame decodes cleanly
 
     RecordBroken --> CheckSubdirDone: Append to broken_files.journal and increment Err count
     BrokenSkipped --> CheckSubdirDone: Increment Err count (keep source subdir intact)
 
-    CodecHeuristic --> FastMove: Case B1 - Already HEVC or bitrate below MIN_BITRATE_KBPS
-    CodecHeuristic --> ReadyQueue: Case B2 - Needs H.265 conversion (push to ms.queue)
+    CodecHeuristic --> FastMove: Case B1 - Already target codec or bitrate below MIN_BITRATE_KBPS
+    CodecHeuristic --> ReadyQueue: Case B2 - Needs conversion (push to ms.queue)
 
     FastMove --> CheckSubdirDone: Move via io_lock and increment Moved count
 
@@ -241,9 +265,12 @@ stateDiagram-v2
     ReadyQueue --> ScpUp: Picked by Remote Dispatcher (Thread 1 scp-up)
 
     LocalStagerRead --> StagedQueue: Push to staged_queue (Max 4 items in RAMDisk)
-    StagedQueue --> LocalEncode: Popped by Local Slot 1 Converter (VideoToolbox / NVENC / libx265)
-    LocalEncode --> FlushQueue: Push to flush_queue
-    LocalEncode --> RecordBroken: Local FFmpeg conversion error
+    StagedQueue --> LocalEncode: Popped by Local Slot 1 Converter (Attempt 1 + Attempt 2 SW/bwdif/aresample)
+    LocalEncode --> VerifyLocalOut: verify_output_durations() (+ lazy demux checks) & 1-frame decode
+    VerifyLocalOut --> FlushQueue: Verified OK
+    VerifyLocalOut --> LocalEncode: Attempt 1 mismatch -> retry Attempt 2 (SW + bwdif + aresample)
+    VerifyLocalOut --> RecordBroken: Attempt 2 failed verification
+    LocalEncode --> RecordBroken: Local FFmpeg conversion error (both attempts)
     FlushQueue --> LocalFlusherWrite: Popped by Local Slot 2 Flusher (copy RAMDisk to HDD via io_lock)
     FlushQueue --> KeepSmallerOrig: Encoded size larger than source (move original via io_lock)
 
@@ -251,11 +278,14 @@ stateDiagram-v2
     RemoteEncode --> ScpDown: FFmpeg exit 0 -> Thread 3 (encode_failed = false)
     RemoteEncode --> ReadyQueue: SSH transport drop (exit 255, re-queue to front)
     RemoteEncode --> RemoteEvictFailed: FFmpeg media error -> Thread 3 (encode_failed = true)
+    ScpDown --> VerifyRemoteOut: verify_output_durations() (+ lazy demux checks) before deleting remote_input
+    VerifyRemoteOut --> CheckSubdirDone: Verified OK -> delete remote files & record in completed_files.journal
+    VerifyRemoteOut --> RemoteEncode: Attempt 1 mismatch -> delete bad output only & retry Attempt 2 (bwdif)
+    VerifyRemoteOut --> RemoteEvictFailed: Attempt 2 failed verification
     RemoteEvictFailed --> RecordBroken: Thread 3 SSH deletes remote files, releases quota, logs broken
 
     KeepSmallerOrig --> CheckSubdirDone: Move original and record in completed_files.journal
     LocalFlusherWrite --> CheckSubdirDone: Record in completed_files.journal and increment Conv count
-    ScpDown --> CheckSubdirDone: Record in completed_files.journal and increment Conv count
 
     CheckSubdirDone --> KeepSourceIntact: failed_files greater than 0
     CheckSubdirDone --> CompareCounts: completed_files equals total_files and failed_files equals 0

@@ -1613,6 +1613,8 @@ pub struct DistributedTaskObject {
     pub error_occurred: Option<String>,
     pub updated_at_epoch_secs: u64,
     pub queued_item: QueuedMediaItem,
+    #[serde(default)]
+    pub fallback_retry_attempted: bool,
 }
 
 #[derive(Debug)]
@@ -3333,33 +3335,7 @@ pub fn verify_output_durations(
         ));
     }
 
-    // 1. Internal Output Audio vs. Video Stream Duration Check (within AV_STREAM_MISMATCH_TOLERANCE_SECS)
-    //    Only enforced when the source itself did not already have an intentional A/V length difference.
-    if let (Some(out_v), Some(out_a)) = (
-        out_probe.video_stream_duration_secs.filter(|&d| d > 0.0),
-        out_probe.audio_stream_duration_secs.filter(|&d| d > 0.0),
-    ) {
-        let av_tol = config.AV_STREAM_MISMATCH_TOLERANCE_SECS.max(0.5);
-        let src_av_matched = match (
-            src_probe.video_stream_duration_secs.filter(|&d| d > 0.0),
-            src_probe.audio_stream_duration_secs.filter(|&d| d > 0.0),
-        ) {
-            (Some(sv), Some(sa)) => (sv - sa).abs() <= av_tol,
-            _ => true,
-        };
-        if src_av_matched && (out_v - out_a).abs() > av_tol {
-            return Err(format!(
-                "Output A/V stream duration desync: output_video={:.2}s vs output_audio={:.2}s (tolerance={:.2}s)",
-                out_v, out_a, av_tol
-            ));
-        }
-    }
-
-    if src_probe.duration_secs <= 0.0 {
-        return Ok(());
-    }
-
-    // 2. Container-aware source-vs-output tolerance from config.yaml
+    // Container-aware tolerance from config.yaml (computed up front so legacy A/V verification can use it)
     let ext = source_path
         .extension()
         .and_then(|e| e.to_str())
@@ -3369,17 +3345,98 @@ pub fn verify_output_durations(
         ext.as_str(),
         "wmv" | "asf" | "avi" | "flv" | "mpg" | "mpeg"
     );
+    let ref_dur = if src_probe.duration_secs > 0.0 {
+        src_probe.duration_secs
+    } else {
+        out_probe.duration_secs
+    };
     let allowed_delta = if is_legacy_container {
         let preroll_min = config.LEGACY_CONTAINER_PREROLL_TOLERANCE_SECS.max(1.5);
         let max_cap = config.LEGACY_CONTAINER_MAX_TOLERANCE_SECS.max(preroll_min);
         let pct_allowance =
-            src_probe.duration_secs * (config.LEGACY_CONTAINER_VFR_TOLERANCE_PCT.max(0.0) / 100.0);
+            ref_dur * (config.LEGACY_CONTAINER_VFR_TOLERANCE_PCT.max(0.0) / 100.0);
         pct_allowance.clamp(preroll_min, max_cap)
     } else {
         config.DURATION_TOLERANCE_SECS.max(0.5)
     };
 
-    // 3. Compare output durations against source video/format/audio durations
+    let mut demuxed_src_av: Option<(Option<f64>, Option<f64>)> = None;
+
+    // 1. Internal Output Audio vs. Video Stream Duration Check (within AV_STREAM_MISMATCH_TOLERANCE_SECS)
+    //    Only enforced when the source itself did not already have an intentional A/V length difference.
+    //    For legacy containers (e.g., WMV/ASF), ffprobe copies a single container Play_Duration onto both
+    //    streams even when true video/audio packet spans differ; lazily verify true source packet spans
+    //    via fast demux-copy before rejecting.
+    if let (Some(out_v), Some(out_a)) = (
+        out_probe.video_stream_duration_secs.filter(|&d| d > 0.0),
+        out_probe.audio_stream_duration_secs.filter(|&d| d > 0.0),
+    ) {
+        let av_tol = config.AV_STREAM_MISMATCH_TOLERANCE_SECS.max(0.5);
+        let hdr_src_v = src_probe.video_stream_duration_secs.filter(|&d| d > 0.0);
+        let hdr_src_a = src_probe.audio_stream_duration_secs.filter(|&d| d > 0.0);
+        let src_av_matched = match (hdr_src_v, hdr_src_a) {
+            (Some(sv), Some(sa)) => (sv - sa).abs() <= av_tol,
+            _ => true,
+        };
+        if src_av_matched && (out_v - out_a).abs() > av_tol {
+            let mut faithfully_preserved_source_asymmetry = false;
+            let mut demux_note = String::new();
+
+            if (is_legacy_container || hdr_src_v.is_none() || hdr_src_a.is_none())
+                && source_path.exists()
+            {
+                let (real_v, real_a) = probe_av_stream_durations_via_demux_copy(source_path);
+                demuxed_src_av = Some((real_v, real_a));
+                if let (Some(rv), Some(ra)) = (real_v, real_a) {
+                    let src_delta = rv - ra;
+                    let out_delta = out_v - out_a;
+                    let introduced_desync = (out_delta - src_delta).abs();
+                    let v_err = (out_v - rv).abs();
+                    let a_err = (out_a - ra).abs();
+                    let desync_tol = if is_legacy_container {
+                        allowed_delta
+                    } else {
+                        av_tol
+                    };
+                    if introduced_desync <= desync_tol && v_err <= allowed_delta && a_err <= allowed_delta
+                    {
+                        faithfully_preserved_source_asymmetry = true;
+                        log_event(
+                            LogLevel::Info,
+                            format!(
+                                "[Verify] Accepted output A/V length difference for '{}' (out_v={:.2}s, out_a={:.2}s) — matches true source demux packet spans (src_v={:.2}s, src_a={:.2}s, introduced_delta={:.2}s <= {:.2}s).",
+                                source_path.display(),
+                                out_v,
+                                out_a,
+                                rv,
+                                ra,
+                                introduced_desync,
+                                desync_tol
+                            ),
+                        );
+                    } else {
+                        demux_note = format!(
+                            " [true_source_demux: v={:.2}s, a={:.2}s, introduced_desync={:.2}s]",
+                            rv, ra, introduced_desync
+                        );
+                    }
+                }
+            }
+
+            if !faithfully_preserved_source_asymmetry {
+                return Err(format!(
+                    "Output A/V stream duration desync: output_video={:.2}s vs output_audio={:.2}s (tolerance={:.2}s){}",
+                    out_v, out_a, av_tol, demux_note
+                ));
+            }
+        }
+    }
+
+    if src_probe.duration_secs <= 0.0 {
+        return Ok(());
+    }
+
+    // 2. Compare output durations against source video/format/audio durations
     let mut src_candidates = vec![src_probe.duration_secs];
     if let Some(v) = src_probe.video_stream_duration_secs.filter(|&d| d > 0.0) {
         src_candidates.push(v);
@@ -3389,6 +3446,14 @@ pub fn verify_output_durations(
     }
     if let Some(a) = src_probe.audio_stream_duration_secs.filter(|&d| d > 0.0) {
         src_candidates.push(a);
+    }
+    if let Some((rv, ra)) = demuxed_src_av {
+        if let Some(v) = rv.filter(|&d| d > 0.0) {
+            src_candidates.push(v);
+        }
+        if let Some(a) = ra.filter(|&d| d > 0.0) {
+            src_candidates.push(a);
+        }
     }
 
     let out_candidates = [
@@ -3405,8 +3470,37 @@ pub fn verify_output_durations(
         }
     }
 
+    // 3. Lazy demux-copy fallback before rejecting:
+    //    Catches buggy 32-bit 10MHz MP4 headers whose mvhd/mdhd duration wrapped modulo
+    //    2^32 / 10^7 = 429.4967s (making ffprobe under-report source duration by 429.5s
+    //    even though the actual packet timeline matches the encoded output).
+    let mut demux_src_note = String::new();
+    if source_path.exists() {
+        let true_src_v = demuxed_src_av
+            .and_then(|(rv, _)| rv)
+            .or_else(|| probe_duration_via_demux_copy(source_path));
+        if let Some(rv) = true_src_v.filter(|&d| d > 0.0) {
+            for od in out_candidates.iter().flatten() {
+                if (rv - *od).abs() <= allowed_delta {
+                    log_event(
+                        LogLevel::Info,
+                        format!(
+                            "[Verify] Accepted output duration ({:.2}s) for '{}' — container header reported {:.2}s (e.g., 32-bit timescale wraparound), but true source demux packet duration is {:.2}s.",
+                            od,
+                            source_path.display(),
+                            src_probe.duration_secs,
+                            rv
+                        ),
+                    );
+                    return Ok(());
+                }
+            }
+            demux_src_note = format!(" [true_source_demux_v={:.2}s]", rv);
+        }
+    }
+
     Err(format!(
-        "source={:.2}s (v={:?}, a={:?}, fmt={:?}) vs output={:.2}s (v={:?}, a={:?}, fmt={:?}) [tolerance={:.2}s]",
+        "source={:.2}s (v={:?}, a={:?}, fmt={:?}) vs output={:.2}s (v={:?}, a={:?}, fmt={:?}) [tolerance={:.2}s]{}",
         src_probe.duration_secs,
         src_probe.video_stream_duration_secs,
         src_probe.audio_stream_duration_secs,
@@ -3415,8 +3509,78 @@ pub fn verify_output_durations(
         out_probe.video_stream_duration_secs,
         out_probe.audio_stream_duration_secs,
         out_probe.format_duration_secs,
-        allowed_delta
+        allowed_delta,
+        demux_src_note
     ))
+}
+
+/// Fast demux-only packet scan (no decoding) to recover actual duration of a specific stream
+/// (`"0:v:0"` or `"0:a:0"`) when container headers omit or duplicate duration metadata (e.g., WMV/ASF).
+pub fn probe_stream_duration_via_demux_copy(filepath: &Path, stream_spec: &str) -> Option<f64> {
+    let out = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(filepath)
+        .args([
+            "-map",
+            stream_spec,
+            "-c",
+            "copy",
+            "-f",
+            "null",
+            "-",
+            "-progress",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !out.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut best_secs: Option<f64> = None;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(us_str) = trimmed.strip_prefix("out_time_us=") {
+            if let Ok(us) = us_str.trim().parse::<i64>() {
+                if us > 0 {
+                    best_secs = Some(us as f64 / 1_000_000.0);
+                }
+            }
+        } else if let Some(hms_str) = trimmed.strip_prefix("out_time=") {
+            let parts: Vec<&str> = hms_str.trim().split(':').collect();
+            if parts.len() == 3 {
+                if let (Ok(h), Ok(m), Ok(s)) = (
+                    parts[0].parse::<f64>(),
+                    parts[1].parse::<f64>(),
+                    parts[2].parse::<f64>(),
+                ) {
+                    let total = h * 3600.0 + m * 60.0 + s;
+                    if total > 0.0 && best_secs.is_none() {
+                        best_secs = Some(total);
+                    }
+                }
+            }
+        }
+    }
+    best_secs
+}
+
+/// Fast demux-only video duration probe wrapper.
+pub fn probe_duration_via_demux_copy(filepath: &Path) -> Option<f64> {
+    probe_stream_duration_via_demux_copy(filepath, "0:v:0")
+}
+
+/// Fast demux-only scan returning `(true_video_duration_secs, true_audio_duration_secs)`.
+pub fn probe_av_stream_durations_via_demux_copy(filepath: &Path) -> (Option<f64>, Option<f64>) {
+    (
+        probe_stream_duration_via_demux_copy(filepath, "0:v:0"),
+        probe_stream_duration_via_demux_copy(filepath, "0:a:0"),
+    )
 }
 
 pub fn get_video_probe_info(filepath: &Path) -> VideoProbeInfo {
@@ -3502,7 +3666,48 @@ pub fn get_video_probe_info(filepath: &Path) -> VideoProbeInfo {
                         .and_then(|b| b.as_str())
                         .and_then(|s| s.parse::<u64>().ok());
 
-                    let duration_secs = stream_dur.or(format_dur).or(audio_dur).unwrap_or(0.0);
+                    let mut duration_secs = stream_dur.or(format_dur).or(audio_dur).unwrap_or(0.0);
+
+                    // Step 1 fallback: Headerless/broadcast-flagged containers (e.g., old WMV/ASF)
+                    // often omit header duration even though the video stream plays cleanly.
+                    // Run a fast demux-only (-c copy) pass to recover true packet duration.
+                    let ext_lower = filepath
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let is_animated_image_ext = matches!(ext_lower.as_str(), "webp" | "gif");
+                    if video_codec != "unknown"
+                        && duration_secs <= 0.0
+                        && file_size_bytes > 0
+                        && !is_animated_image_ext
+                    {
+                        if let Some(demux_dur) = probe_duration_via_demux_copy(filepath) {
+                            duration_secs = demux_dur;
+                            stream_dur = Some(demux_dur);
+                            log_event(
+                                LogLevel::Info,
+                                format!(
+                                    "[Probe] Recovered duration {:.2}s for headerless '{}' (codec={}) via fast demux-copy scan.",
+                                    demux_dur,
+                                    filepath.display(),
+                                    video_codec
+                                ),
+                            );
+                        } else {
+                            // Step 2 fallback: Leave probe_error=None when a valid video stream
+                            // exists so Verifier Stage B (1-frame decode) decides playability.
+                            log_event(
+                                LogLevel::Warn,
+                                format!(
+                                    "[Probe] Header and demux scan reported 0.00s duration for '{}' (codec={}); deferring validity to 1-frame decode.",
+                                    filepath.display(),
+                                    video_codec
+                                ),
+                            );
+                        }
+                    }
+
                     let bitrate_kbps = format_bps
                         .or(stream_bps)
                         .map(|bps| bps / 1000)
@@ -3514,13 +3719,13 @@ pub fn get_video_probe_info(filepath: &Path) -> VideoProbeInfo {
                             }
                         });
 
-                    let probe_error = if video_codec == "unknown" || duration_secs <= 0.0 {
+                    let probe_error = if video_codec == "unknown" || file_size_bytes == 0 {
                         if !stderr_msg.is_empty() {
                             Some(stderr_msg)
                         } else {
                             Some(format!(
-                                "Missing valid video stream or duration (codec={}, duration={:.2}s)",
-                                video_codec, duration_secs
+                                "Missing valid video stream (codec={}, bytes={})",
+                                video_codec, file_size_bytes
                             ))
                         }
                     } else {
@@ -4022,10 +4227,14 @@ fn complete_queued_item(
                 );
 
                 // 1. ffprobe all target files and delete any bad/corrupt files
+                let is_audio_less_target = codecs::validate_config_targets(config)
+                    .map(|t| t.container.is_audio_less())
+                    .unwrap_or(false);
                 for tfile in &target_files {
                     let tprobe = get_video_probe_info(tfile);
                     if tprobe.video_codec == "unknown"
-                        || tprobe.duration_secs <= 0.0
+                        || tprobe.file_size_bytes == 0
+                        || (!is_audio_less_target && tprobe.duration_secs <= 0.0)
                         || tprobe.probe_error.is_some()
                     {
                         let reason = tprobe
@@ -5482,12 +5691,14 @@ fn run_mount_verifier_loop(
             break;
         }
 
-        if probe.video_codec == "unknown" || probe.duration_secs <= 0.0 || probe.probe_error.is_some()
+        if probe.video_codec == "unknown"
+            || probe.file_size_bytes == 0
+            || probe.probe_error.is_some()
         {
             let reason = probe.probe_error.clone().unwrap_or_else(|| {
                 format!(
-                    "Invalid video stream (codec={}, duration={:.2}s)",
-                    probe.video_codec, probe.duration_secs
+                    "Invalid video stream (codec={}, bytes={})",
+                    probe.video_codec, probe.file_size_bytes
                 )
             });
             let v_dur = verify_start_instant.elapsed().as_secs_f64();
@@ -7607,17 +7818,30 @@ pub fn build_remote_cleanup_command(
     remote_input_path: &str,
     remote_output_path: &str,
 ) -> String {
+    let paths: Vec<&str> = [remote_input_path, remote_output_path]
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
+    if paths.is_empty() {
+        return "true".to_string();
+    }
     if node.OS_TYPE.to_lowercase().contains("win") {
+        let joined = paths
+            .iter()
+            .map(|p| format!("'{}'", p.replace('/', "\\")))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            "powershell -NoProfile -Command \"Remove-Item -LiteralPath '{}','{}' -Force -ErrorAction SilentlyContinue\"",
-            remote_input_path.replace('/', "\\"),
-            remote_output_path.replace('/', "\\")
+            "powershell -NoProfile -Command \"Remove-Item -LiteralPath {} -Force -ErrorAction SilentlyContinue\"",
+            joined
         )
     } else {
-        format!(
-            "rm -f \"{}\" \"{}\"",
-            remote_input_path, remote_output_path
-        )
+        let joined = paths
+            .iter()
+            .map(|p| format!("\"{}\"", p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("rm -f {}", joined)
     }
 }
 
@@ -9623,6 +9847,12 @@ fn run_remote_machine_manager(
         };
         let remote_audio_args_str = format_remote_ffmpeg_args(&remote_audio_args);
         let remote_muxer_args_str = format_remote_ffmpeg_args(&remote_target.container.muxer_args());
+        let remote_fallback_filter_str = format_remote_ffmpeg_args(
+            &codecs::sanitize_fallback_filter_args(
+                &config.FFMPEG_FALLBACK_VIDEO_FILTER_ARGS,
+                remote_target.video,
+            ),
+        );
         let req_fail = requeue_on_failure.clone();
         let reset_fn = graceful_reset_on_disk_full.clone();
 
@@ -9684,11 +9914,19 @@ fn run_remote_machine_manager(
                         task.conversion_state = StageStatus::Started;
                         journal_ref.upsert(task.clone());
 
+                        let remote_filter_prefix = if task.fallback_retry_attempted
+                            && !remote_fallback_filter_str.is_empty()
+                        {
+                            format!("{} ", remote_fallback_filter_str)
+                        } else {
+                            String::new()
+                        };
                         let raw_remote_cmd = format!(
-                            "\"{}\" -nostdin {} -i \"{}\" {} {} {} -y -loglevel error -progress pipe:1 -nostats \"{}\"",
+                            "\"{}\" -nostdin {} -i \"{}\" {}{} {} {} -y -loglevel error -progress pipe:1 -nostats \"{}\"",
                             ffmpeg_bin,
                             remote_decode_args_str,
                             task.remote_input_path,
+                            remote_filter_prefix,
                             format_remote_ffmpeg_args(&enc_args),
                             remote_audio_args_str,
                             remote_muxer_args_str,
@@ -10212,7 +10450,10 @@ fn run_remote_machine_manager(
                         }
                     }
                     None => {
-                        if up_done.load(Ordering::Relaxed) && enc_q.lock().unwrap().is_empty() {
+                        if up_done.load(Ordering::Relaxed)
+                            && enc_q.lock().unwrap().is_empty()
+                            && inflight_ref.lock().unwrap().is_empty()
+                        {
                             break;
                         }
                         wait_tracker.sleep_with_reason(
@@ -10380,31 +10621,6 @@ fn run_remote_machine_manager(
 
                         match download_res {
                             Ok(_) => {
-                                mq.clear_in_flight(task.queued_item.item_id);
-                                inflight_ref.lock().unwrap().remove(&task.task_id);
-                                let cleanup_start = Instant::now();
-                                let rm_cmd = build_remote_cleanup_command(
-                                    &node_cfg,
-                                    &task.remote_input_path,
-                                    &task.remote_output_path,
-                                );
-                                let _ = run_ssh_command(&node_cfg, &rm_cmd);
-                                let cleanup_secs = cleanup_start.elapsed().as_secs_f64();
-
-                                used_ref.fetch_sub(
-                                    task.file_size_bytes.min(used_ref.load(Ordering::Relaxed)),
-                                    Ordering::Relaxed,
-                                );
-                                let cur_used = used_ref.load(Ordering::Relaxed);
-                                let quota_used_gb = (cur_used as f64) / gb_div;
-                                let quota_rem_gb = (quota_max_gb - quota_used_gb).max(0.0);
-                                global_metrics().update_remote_quota(
-                                    &r_nodename,
-                                    &node_cfg.OS_TYPE,
-                                    cur_used,
-                                    max_size_bytes,
-                                );
-
                                 let new_size = fs::metadata(&task.final_h265_dest_path)
                                     .map(|m| m.len())
                                     .unwrap_or(0);
@@ -10422,6 +10638,66 @@ fn run_remote_machine_manager(
                                     &cfg,
                                 ) {
                                     let _ = fs::remove_file(&task.final_h265_dest_path);
+
+                                    // Attempt 2 Remote Fallback Retry (e.g., 2.0x field-coded interlaced H.264):
+                                    // Keep task.remote_input_path on the remote host (zero re-upload!), delete only
+                                    // the bad remote output, and re-enqueue onto enc_q with bwdif deinterlacing.
+                                    if !task.fallback_retry_attempted
+                                        && !cfg.FFMPEG_FALLBACK_VIDEO_FILTER_ARGS.is_empty()
+                                        && !is_shutdown_requested()
+                                    {
+                                        let rm_out_only = build_remote_cleanup_command(
+                                            &node_cfg,
+                                            "",
+                                            &task.remote_output_path,
+                                        );
+                                        let _ = run_ssh_command(&node_cfg, &rm_out_only);
+                                        log_event(
+                                            LogLevel::Warn,
+                                            format!(
+                                                "[Remote Manager {}] Attempt 1 output verification failed for '{}' ({}); retrying Attempt 2 remotely with fallback deinterlace filter (keeping uploaded input)...",
+                                                wkey,
+                                                task.original_path.display(),
+                                                dur_err
+                                            ),
+                                        );
+                                        task.fallback_retry_attempted = true;
+                                        task.conversion_state = StageStatus::Pending;
+                                        task.error_occurred = None;
+                                        journal_ref.upsert(task.clone());
+                                        mq.set_in_flight(
+                                            &task.queued_item,
+                                            QueueEntryCategory::ActiveRemote,
+                                            &format!(
+                                                "REMOTE {} [Retry 2: bwdif]",
+                                                node_cfg.IP_ADDRESS
+                                            ),
+                                        );
+                                        enc_q.lock().unwrap().push_front((mq, task));
+                                        continue;
+                                    }
+
+                                    mq.clear_in_flight(task.queued_item.item_id);
+                                    inflight_ref.lock().unwrap().remove(&task.task_id);
+                                    let cleanup_start = Instant::now();
+                                    let rm_cmd = build_remote_cleanup_command(
+                                        &node_cfg,
+                                        &task.remote_input_path,
+                                        &task.remote_output_path,
+                                    );
+                                    let _ = run_ssh_command(&node_cfg, &rm_cmd);
+                                    let cleanup_secs = cleanup_start.elapsed().as_secs_f64();
+                                    used_ref.fetch_sub(
+                                        task.file_size_bytes.min(used_ref.load(Ordering::Relaxed)),
+                                        Ordering::Relaxed,
+                                    );
+                                    global_metrics().update_remote_quota(
+                                        &r_nodename,
+                                        &node_cfg.OS_TYPE,
+                                        used_ref.load(Ordering::Relaxed),
+                                        max_size_bytes,
+                                    );
+
                                     let err_msg = format!(
                                         "Output duration mismatch for {:?} (remote {}): {}",
                                         task.final_h265_dest_path, r_nodename, dur_err
@@ -10493,6 +10769,31 @@ fn run_remote_machine_manager(
                                     in_pipe.fetch_sub(1, Ordering::Relaxed);
                                     continue;
                                 }
+
+                                mq.clear_in_flight(task.queued_item.item_id);
+                                inflight_ref.lock().unwrap().remove(&task.task_id);
+                                let cleanup_start = Instant::now();
+                                let rm_cmd = build_remote_cleanup_command(
+                                    &node_cfg,
+                                    &task.remote_input_path,
+                                    &task.remote_output_path,
+                                );
+                                let _ = run_ssh_command(&node_cfg, &rm_cmd);
+                                let cleanup_secs = cleanup_start.elapsed().as_secs_f64();
+
+                                used_ref.fetch_sub(
+                                    task.file_size_bytes.min(used_ref.load(Ordering::Relaxed)),
+                                    Ordering::Relaxed,
+                                );
+                                let cur_used = used_ref.load(Ordering::Relaxed);
+                                let quota_used_gb = (cur_used as f64) / gb_div;
+                                let quota_rem_gb = (quota_max_gb - quota_used_gb).max(0.0);
+                                global_metrics().update_remote_quota(
+                                    &r_nodename,
+                                    &node_cfg.OS_TYPE,
+                                    cur_used,
+                                    max_size_bytes,
+                                );
                                 let saved = task.file_size_bytes.saturating_sub(new_size);
                                 let final_tgt_mb = (new_size as f64) / mb_div;
                                 let saved_mb = (saved as f64) / mb_div;
@@ -10769,6 +11070,7 @@ fn run_remote_machine_manager(
             error_occurred: None,
             updated_at_epoch_secs: 0,
             queued_item: item.clone(),
+            fallback_retry_attempted: false,
         };
 
         journal.upsert(task_obj.clone());

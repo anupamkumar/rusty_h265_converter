@@ -596,6 +596,7 @@ fn work_stealing_prioritizes_unoccupied_mounts_and_persists_task_journal() {
         error_occurred: None,
         updated_at_epoch_secs: 0,
         queued_item: picked_item,
+        fallback_retry_attempted: false,
     });
 
     let reloaded = TaskJournal::new(journal_path.clone());
@@ -1039,6 +1040,7 @@ fn remote_encode_failure_handoff_evicts_remote_input_and_records_broken_journal(
         ),
         updated_at_epoch_secs: 0,
         queued_item: item,
+        fallback_retry_attempted: false,
     };
 
     let inflight: Arc<Mutex<BTreeMap<u64, (Arc<MountQueueState>, DistributedTaskObject)>>> =
@@ -2228,6 +2230,302 @@ fn test_layer2_live_preflight_5s_256x144_hevc_vp9_and_webp() {
         .matches_ffmpeg_encoder(&webp_prof.video_encoder_name));
     assert_eq!(webp_prof.audio_args, vec!["-an"]);
     assert_eq!(webp_prof.muxer_args, vec!["-loop", "0"]);
+}
+
+#[test]
+fn test_headerless_wmv_zero_duration_fallback_and_corrupt_rejection() {
+    if codecs::query_local_ffmpeg_encoders().is_err() {
+        eprintln!("Skipping headerless WMV probe test: ffmpeg not found in PATH");
+        return;
+    }
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "rusty_h265_headerless_wmv_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).unwrap();
+
+    // 1. Create a genuine headerless WMV/ASF file via piped stdout (no ASF Play Duration in header)
+    let wmv_path = tmp_dir.join("headerless_broadcast.wmv");
+    let gen_out = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=256x144:rate=15:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo:d=5",
+            "-c:v",
+            "wmv1",
+            "-c:a",
+            "wmav2",
+            "-f",
+            "asf",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("ffmpeg must run to synthesize headerless WMV");
+    assert!(
+        gen_out.status.success() && !gen_out.stdout.is_empty(),
+        "Synthesizing headerless WMV failed: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+    fs::write(&wmv_path, &gen_out.stdout).unwrap();
+
+    // Confirm raw ffprobe header truly lacks duration, then verify get_video_probe_info recovers it!
+    let probe = get_video_probe_info(&wmv_path);
+    assert_eq!(probe.video_codec, "wmv1");
+    assert!(
+        probe.probe_error.is_none(),
+        "Headerless playable WMV must not be marked broken: {:?}",
+        probe.probe_error
+    );
+    assert!(
+        probe.duration_secs >= 4.5 && probe.duration_secs <= 5.5,
+        "Demux-copy fallback must recover ~5.0s duration, got {:.3}s",
+        probe.duration_secs
+    );
+    assert!(probe.bitrate_kbps > 0, "Bitrate must be derived from recovered duration");
+    verify_first_frame_decodable(&wmv_path).expect("Headerless WMV must pass 1-frame decode check");
+
+    // 2. Corrupt garbage WMV must STILL fail probing cleanly
+    let bad_wmv = tmp_dir.join("corrupt.wmv");
+    fs::write(&bad_wmv, b"NOT_A_VALID_ASF_WMV_FILE_1234567890").unwrap();
+    let bad_probe = get_video_probe_info(&bad_wmv);
+    assert_eq!(bad_probe.video_codec, "unknown");
+    assert!(bad_probe.probe_error.is_some());
+
+    // 3. Step 2 fallback: when src_probe.duration_secs == 0.0 (unindexed timestamps),
+    // verify_output_durations accepts valid synced output, but still rejects 0s or A/V-desynced output.
+    let cfg = AppConfig::default();
+    let src_zero = VideoProbeInfo {
+        video_codec: "wmv2".to_string(),
+        audio_codec: "wmav2".to_string(),
+        duration_secs: 0.0,
+        video_stream_duration_secs: None,
+        audio_stream_duration_secs: None,
+        format_duration_secs: None,
+        bitrate_kbps: 0,
+        file_size_bytes: 25_000_000,
+        probe_error: None,
+    };
+    let good_out = VideoProbeInfo {
+        video_codec: "hevc".to_string(),
+        audio_codec: "aac".to_string(),
+        duration_secs: 120.5,
+        video_stream_duration_secs: Some(120.5),
+        audio_stream_duration_secs: Some(120.4),
+        format_duration_secs: Some(120.5),
+        bitrate_kbps: 1500,
+        file_size_bytes: 12_000_000,
+        probe_error: None,
+    };
+    assert!(verify_output_durations(&wmv_path, &src_zero, &good_out, &cfg).is_ok());
+
+    let desync_out = VideoProbeInfo {
+        audio_stream_duration_secs: Some(110.0),
+        ..good_out.clone()
+    };
+    assert!(verify_output_durations(&wmv_path, &src_zero, &desync_out, &cfg).is_err());
+
+    let zero_out = VideoProbeInfo {
+        duration_secs: 0.0,
+        video_stream_duration_secs: None,
+        ..good_out
+    };
+    assert!(verify_output_durations(&wmv_path, &src_zero, &zero_out, &cfg).is_err());
+
+    let _ = fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_asymmetric_wmv_lazy_av_demux_verification() {
+    if codecs::query_local_ffmpeg_encoders().is_err() {
+        eprintln!("Skipping asymmetric WMV A/V demux test: ffmpeg not found in PATH");
+        return;
+    }
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "rusty_h265_asym_wmv_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).unwrap();
+
+    // Synthesize a WMV where true video is 5s and true audio is 10s
+    // (ASF headers duplicate 10s Play_Duration onto BOTH streams in ffprobe!)
+    let asym_wmv = tmp_dir.join("asymmetric_tracks.wmv");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=256x144:rate=15:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo:d=10",
+            "-c:v",
+            "wmv1",
+            "-c:a",
+            "wmav2",
+            "-y",
+        ])
+        .arg(&asym_wmv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .expect("ffmpeg must synthesize asymmetric WMV");
+    assert!(status.success());
+
+    let src_probe = get_video_probe_info(&asym_wmv);
+    let cfg = AppConfig::default();
+
+    // Faithful MP4 output preserves true 5s video & 10s audio -> MUST PASS via lazy source demux check!
+    let faithful_out = VideoProbeInfo {
+        video_codec: "hevc".to_string(),
+        audio_codec: "aac".to_string(),
+        duration_secs: 5.02,
+        video_stream_duration_secs: Some(5.02),
+        audio_stream_duration_secs: Some(10.01),
+        format_duration_secs: Some(10.01),
+        bitrate_kbps: 800,
+        file_size_bytes: 500_000,
+        probe_error: None,
+    };
+    verify_output_durations(&asym_wmv, &src_probe, &faithful_out, &cfg)
+        .expect("Faithful transcode of asymmetric WMV must pass via lazy demux span verification");
+
+    // Genuinely drifted/truncated output (video truncated to 0.5s vs 5.0s true source) -> MUST FAIL!
+    let broken_out = VideoProbeInfo {
+        duration_secs: 0.50,
+        video_stream_duration_secs: Some(0.50),
+        audio_stream_duration_secs: Some(10.01),
+        format_duration_secs: Some(10.01),
+        ..faithful_out
+    };
+    let err = verify_output_durations(&asym_wmv, &src_probe, &broken_out, &cfg)
+        .expect_err("Truncated/desynced output must still be rejected");
+    assert!(
+        err.contains("true_source_demux"),
+        "Rejection should report demuxed true source spans: {}",
+        err
+    );
+
+    let _ = fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_wrapped_32bit_mp4_header_lazy_demux_recovery() {
+    if codecs::query_local_ffmpeg_encoders().is_err() {
+        eprintln!("Skipping wrapped MP4 header test: ffmpeg not found in PATH");
+        return;
+    }
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "rusty_h265_wrapped_mp4_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).unwrap();
+
+    // Synthesize a real 5.0s MP4 file
+    let mp4_path = tmp_dir.join("wrapped_header_source.mp4");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=256x144:rate=15:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo:d=5",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-y",
+        ])
+        .arg(&mp4_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .expect("ffmpeg must synthesize 5s MP4");
+    assert!(status.success());
+
+    let cfg = AppConfig::default();
+
+    // Simulate a wrapped 32-bit 10MHz MP4 header where ffprobe under-reports source as 0.50s
+    // while actual packet stream duration in mp4_path is 5.00s.
+    let wrapped_src_probe = VideoProbeInfo {
+        video_codec: "h264".to_string(),
+        audio_codec: "aac".to_string(),
+        duration_secs: 0.50,
+        video_stream_duration_secs: Some(0.50),
+        audio_stream_duration_secs: Some(0.49),
+        format_duration_secs: Some(0.50),
+        bitrate_kbps: 2000,
+        file_size_bytes: 200_000,
+        probe_error: None,
+    };
+
+    // Output has true synced duration 5.00s (both v & a match!) -> MUST PASS via lazy demux check!
+    let true_out_probe = VideoProbeInfo {
+        video_codec: "hevc".to_string(),
+        audio_codec: "aac".to_string(),
+        duration_secs: 5.00,
+        video_stream_duration_secs: Some(5.00),
+        audio_stream_duration_secs: Some(4.99),
+        format_duration_secs: Some(5.00),
+        bitrate_kbps: 800,
+        file_size_bytes: 100_000,
+        probe_error: None,
+    };
+    verify_output_durations(&mp4_path, &wrapped_src_probe, &true_out_probe, &cfg)
+        .expect("Lazy demux check must recover true 5.0s source duration and accept synced output");
+
+    // Genuinely truncated output (2.50s vs wrapped 0.50s header AND true 5.00s demux) -> MUST STILL FAIL!
+    let truncated_out = VideoProbeInfo {
+        duration_secs: 2.50,
+        video_stream_duration_secs: Some(2.50),
+        audio_stream_duration_secs: Some(2.50),
+        format_duration_secs: Some(2.50),
+        ..true_out_probe
+    };
+    let err = verify_output_durations(&mp4_path, &wrapped_src_probe, &truncated_out, &cfg)
+        .expect_err("Genuinely truncated output must still fail even after lazy demux check");
+    assert!(
+        err.contains("true_source_demux_v="),
+        "Error should include demuxed source duration: {}",
+        err
+    );
+
+    let _ = fs::remove_dir_all(&tmp_dir);
 }
 
 
